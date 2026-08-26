@@ -2,9 +2,11 @@ name: NBN Job Board → Telegram
 
 on:
   schedule:
-    # Every 30 minutes. GitHub's scheduler is best-effort and can run late
-    # under load; the state file makes late or skipped runs harmless.
-    - cron: "*/30 * * * *"
+    # Every 30 minutes, deliberately offset off :00/:30. GitHub's scheduler is
+    # best-effort and sheds load hardest at the top and half of the hour, so
+    # odd minutes get picked up far more reliably. The state file makes late
+    # or skipped runs harmless.
+    - cron: "8,38 * * * *"
   workflow_dispatch:
     inputs:
       mode:
