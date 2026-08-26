@@ -1,0 +1,77 @@
+name: NBN Job Board → Telegram
+
+on:
+  schedule:
+    # Every 30 minutes. GitHub's scheduler is best-effort and can run late
+    # under load; the state file makes late or skipped runs harmless.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        type: choice
+        default: normal
+        options: [normal, dry-run, seed, test-message]
+
+# Never let two runs write state/seen.json at the same time.
+concurrency:
+  group: nbn-jobs
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Poll job board and notify
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Optional filters — set these as repository *variables* (not secrets)
+          # under Settings → Secrets and variables → Actions → Variables.
+          KEYWORDS: ${{ vars.KEYWORDS }}
+          EXCLUDE_KEYWORDS: ${{ vars.EXCLUDE_KEYWORDS }}
+          REGIONS: ${{ vars.REGIONS }}
+          CATEGORIES: ${{ vars.CATEGORIES }}
+          JOB_TYPES: ${{ vars.JOB_TYPES }}
+          REMOTE_ONLY: ${{ vars.REMOTE_ONLY }}
+          MAX_MESSAGES_PER_RUN: ${{ vars.MAX_MESSAGES_PER_RUN }}
+        run: |
+          case "${{ inputs.mode }}" in
+            dry-run)      python scraper/main.py --dry-run ;;
+            seed)         python scraper/main.py --seed ;;
+            test-message) python scraper/main.py --test-message ;;
+            *)            python scraper/main.py ;;
+          esac
+
+      - name: Commit updated state
+        if: ${{ inputs.mode != 'dry-run' && inputs.mode != 'test-message' }}
+        run: |
+          if git diff --quiet -- state/seen.json; then
+            echo "No state change."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/seen.json
+          git commit -m "chore: update seen job listings [skip ci]"
+          # Another run may have pushed while we worked; rebase and retry.
+          for attempt in 1 2 3; do
+            if git push; then exit 0; fi
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            sleep 5
+          done
+          echo "::error::Could not push updated state after 3 attempts"
+          exit 1
